@@ -1,0 +1,93 @@
+# @version 0.3.1
+
+struct GeneralRebalanceInput:
+    tokenId: uint256
+    tickUpper: int128
+    tickLower: int128
+    weight: uint256
+
+TRANSFER_MID: constant(Bytes[4]) = method_id("transfer(address,uint256)")
+TRANSFER_FROM_MID: constant(Bytes[4]) = method_id("transferFrom(address,address,uint256)")
+
+MAX_COINS: constant(uint256) = 5
+NAME: immutable(String[64])
+SYMBOL: immutable(String[32])
+
+event Transfer:
+    _from: indexed(address)
+    _to: indexed(address)
+    _value: uint256
+
+event Approval:
+    _owner: indexed(address)
+    _spender: indexed(address)
+    _value: uint256
+
+balanceOf: public(HashMap[address, uint256])
+allowance: public(HashMap[address, HashMap[address, uint256]])
+totalSupply: public(uint256)
+
+@external
+def __init__(name_: String[64], symbol_: String[32]):
+    NAME = name_
+    SYMBOL = symbol_
+
+@external
+@view
+def name() -> String[64]:
+    return NAME
+
+@external
+@view
+def symbol() -> String[32]:
+    return SYMBOL
+
+@external
+@pure
+def decimals() -> uint256:
+    return 18
+
+@external
+def transfer(recipient: address, amount: uint256) -> bool:
+    assert recipient != ZERO_ADDRESS, "ERC20: transfer to the zero address"
+    self.balanceOf[msg.sender] -= amount
+    self.balanceOf[recipient] += amount
+    log Transfer(msg.sender, recipient, amount)
+    return True
+
+@external
+def transferFrom(sender: address, recipient: address, amount: uint256) -> bool:
+    assert sender != ZERO_ADDRESS, "ERC20: transfer from the zero address"
+    assert recipient != ZERO_ADDRESS, "ERC20: transfer to the zero address"
+    self.balanceOf[sender] -= amount
+    self.balanceOf[recipient] += amount
+    self.allowance[sender][msg.sender] -= amount
+    log Transfer(sender, recipient, amount)
+    return True
+
+@external
+def approve(_spender : address, _value : uint256) -> bool:
+    assert _value == 0 or self.allowance[msg.sender][_spender] == 0
+    self.allowance[msg.sender][_spender] = _value
+    log Approval(msg.sender, _spender, _value)
+    return True
+
+@external
+def rebalance(rebalance_data: GeneralRebalanceInput[MAX_COINS - 1], currentPriceX96: uint256):
+    """
+    Note: 'GeneralRebalanceInput' has the following format
+           GeneralRebalanceInput = [
+            [0,0,0,0],                 #0 because we cannot swap ETH for ETH 
+            [num_token2_swap,0,0,0],
+            [num_token3_swap,0,0,0],
+            [num_token4_swap,0,0,0],     
+            [num_token5_swap,0,0,0],     
+            ] 
+    num_token2_swap : the number of token2 we need to buy (if positive) / sell (if negative), using eth.
+    etc.
+    """
+    for ii in range(4):
+        num_tokeni_to_swap: uint256 = rebalance_data[ii].tokenId
+        if num_tokeni_to_swap > 0:
+            eth_balance: uint256 = self.balance
+    pass
