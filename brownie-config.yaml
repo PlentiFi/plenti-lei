@@ -1,7 +1,12 @@
+networks:
+    default: development
+    development:
+        max_fee: 500 gwei
+        priority_fee: 1 gwei
+
 compiler:
     solc:
         version: 0.8.11
-        remappings:
-            - "@openzeppelin=OpenZeppelin/openzeppelin-contracts@4.4.2"
-            - "@uniswap/v3-core=Uniswap/v3-core@1.0.0"
-            - "@uniswap/v3-periphery=Uniswap/v3-periphery@1.3.0"
+        optimizer:
+            enabled: true
+            runs: 999999

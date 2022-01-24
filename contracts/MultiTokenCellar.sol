@@ -2,13 +2,13 @@
 
 pragma solidity 0.8.11;
 
-import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import { ERC20 } from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
-import { ReentrancyGuard } from "@openzeppelin/contracts/security/ReentrancyGuard.sol";
-import { ISwapRouter } from "@uniswap/v3-periphery/contracts/interfaces/ISwapRouter.sol";
-import { IUniswapV3Factory } from "@uniswap/v3-core/contracts/interfaces/IUniswapV3Factory.sol";
-import { IUniswapV3Pool } from "@uniswap/v3-core/contracts/interfaces/IUniswapV3Pool.sol";
-import { AggregatorInterface } from "@chainlink/contracts/src/v0.8/interfaces/AggregatorInterface.sol";
+import { IERC20 } from "./external/openzeppelin/token/ERC20/IERC20.sol";
+import { ERC20 } from "./external/openzeppelin/token/ERC20/ERC20.sol";
+import { ReentrancyGuard } from "./external/openzeppelin/security/ReentrancyGuard.sol";
+import { ISwapRouter } from "./external/uniswap/v3-periphery/ISwapRouter.sol";
+import { IUniswapV3Factory } from "./external/uniswap/v3-core/IUniswapV3Factory.sol";
+import { IUniswapV3Pool } from "./external/uniswap/v3-core/IUniswapV3Pool.sol";
+import { AggregatorInterface } from "./external/chainlink/AggregatorInterface.sol";
 
 interface IWETH is IERC20{
     /**
@@ -57,26 +57,7 @@ contract MultiTokenCellar is ERC20, ReentrancyGuard {
     function rebalance(GeneralRebalanceInput[] calldata rebalanceInput, uint256) external {
         address[TOKENCOUNT] memory assets = [WBTC, UNI, LINK, SOL];
         for (uint256 i = 0; i < TOKENCOUNT; i++) {
-            if (rebalanceInput[i].direction == 0) {
-                address asset = assets[i];
-                uint256 ethBalance = address(this).balance;
-                IUniswapV3Pool pool = IUniswapV3Pool(IUniswapV3Factory(SWAPFACTORY).getPool(WETH, asset, rebalanceInput[i].feeLevel));
-                (, int24 tick, , , , , ) = pool.slot0();
-                int24 tickSpace = pool.tickSpacing();
-                require(rebalanceInput[i].currentTick + tickSpace >= tick && rebalanceInput[i].currentTick - tickSpace <= tick, "High Slippage");
-                ISwapRouter(SWAPROUTER).exactOutputSingle{value: ethBalance}(
-                    ISwapRouter.ExactOutputSingleParams({
-                        tokenIn: WETH,
-                        tokenOut: asset,
-                        fee: rebalanceInput[i].feeLevel,
-                        recipient: address(this),
-                        deadline: block.timestamp,
-                        amountOut: rebalanceInput[i].amount,
-                        amountInMaximum: ethBalance,
-                        sqrtPriceLimitX96: 0
-                    })
-                );
-            } else if (rebalanceInput[i].direction == 1) {
+            if (rebalanceInput[i].amount > 0 && rebalanceInput[i].direction == 1) {
                 address asset = assets[i];
                 IUniswapV3Pool pool = IUniswapV3Pool(IUniswapV3Factory(SWAPFACTORY).getPool(WETH, asset, rebalanceInput[i].feeLevel));
                 (, int24 tick, , , , , ) = pool.slot0();
@@ -84,7 +65,7 @@ contract MultiTokenCellar is ERC20, ReentrancyGuard {
                 require(rebalanceInput[i].currentTick + tickSpace >= tick && rebalanceInput[i].currentTick - tickSpace <= tick, "High Slippage");
                 IERC20(asset).approve(SWAPROUTER, 0);
                 IERC20(asset).approve(SWAPROUTER, rebalanceInput[i].amount);
-                ISwapRouter(SWAPROUTER).exactInputSingle(
+                uint256 amountOut = ISwapRouter(SWAPROUTER).exactInputSingle(
                     ISwapRouter.ExactInputSingleParams({
                         tokenIn: asset,
                         tokenOut: WETH,
@@ -96,8 +77,34 @@ contract MultiTokenCellar is ERC20, ReentrancyGuard {
                         sqrtPriceLimitX96: 0
                     })
                 );
+                IWETH(WETH).withdraw(amountOut);
             }
         }
+        uint256 ethBalance = address(this).balance;
+        IWETH(WETH).deposit{value: ethBalance}();
+        IERC20(WETH).approve(SWAPROUTER, ethBalance);
+        for (uint256 i = 0; i < TOKENCOUNT; i++) {
+            if (rebalanceInput[i].amount > 0 && rebalanceInput[i].direction == 0) {
+                address asset = assets[i];
+                IUniswapV3Pool pool = IUniswapV3Pool(IUniswapV3Factory(SWAPFACTORY).getPool(WETH, asset, rebalanceInput[i].feeLevel));
+                (, int24 tick, , , , , ) = pool.slot0();
+                int24 tickSpace = pool.tickSpacing();
+                require(rebalanceInput[i].currentTick + tickSpace >= tick && rebalanceInput[i].currentTick - tickSpace <= tick, "High Slippage");
+                ISwapRouter(SWAPROUTER).exactOutputSingle(
+                    ISwapRouter.ExactOutputSingleParams({
+                        tokenIn: WETH,
+                        tokenOut: asset,
+                        fee: rebalanceInput[i].feeLevel,
+                        recipient: address(this),
+                        deadline: block.timestamp,
+                        amountOut: rebalanceInput[i].amount,
+                        amountInMaximum: ethBalance,
+                        sqrtPriceLimitX96: 0
+                    })
+                );
+            }
+        }
+        IWETH(WETH).withdraw(IWETH(WETH).balanceOf(address(this)));
     }
 
     function addCapital() external payable {
@@ -112,11 +119,7 @@ contract MultiTokenCellar is ERC20, ReentrancyGuard {
             cap += IERC20(UNI).balanceOf(address(this)) * uint256(AggregatorInterface(UNI_ETH_PRICE_FEED).latestAnswer()) / 10 ** 18;
             cap += IERC20(LINK).balanceOf(address(this)) * uint256(AggregatorInterface(LINK_ETH_PRICE_FEED).latestAnswer()) / 10 ** 18;
             cap += IERC20(SOL).balanceOf(address(this)) * uint256(AggregatorInterface(SOL_USD_PRICE_FEED).latestAnswer()) / uint256(AggregatorInterface(ETH_USD_PRICE_FEED).latestAnswer());
-            if (cap == 0) {
-                _mint(msg.sender, newCap);
-            } else {
-                _mint(msg.sender, _totalSupply * newCap / cap);
-            }
+            _mint(msg.sender, _totalSupply * newCap / cap);
         }
     }
 
@@ -132,20 +135,22 @@ contract MultiTokenCellar is ERC20, ReentrancyGuard {
             int24 tickSpace = pool.tickSpacing();
             require(swapPoolInfo[i].currentTick + tickSpace >= tick && swapPoolInfo[i].currentTick - tickSpace <= tick, "High Slippage");
             uint256 amount = IERC20(asset).balanceOf(address(this)) * share / _totalSupply;
-            IERC20(asset).approve(SWAPROUTER, 0);
-            IERC20(asset).approve(SWAPROUTER, amount);
-            ISwapRouter(SWAPROUTER).exactInputSingle(
-                ISwapRouter.ExactInputSingleParams({
-                    tokenIn: asset,
-                    tokenOut: WETH,
-                    fee: swapPoolInfo[i].feeLevel,
-                    recipient: address(this),
-                    deadline: block.timestamp,
-                    amountIn: amount,
-                    amountOutMinimum: 0,
-                    sqrtPriceLimitX96: 0
-                })
-            );
+            if (amount > 0) {
+                IERC20(asset).approve(SWAPROUTER, 0);
+                IERC20(asset).approve(SWAPROUTER, amount);
+                ISwapRouter(SWAPROUTER).exactInputSingle(
+                    ISwapRouter.ExactInputSingleParams({
+                        tokenIn: asset,
+                        tokenOut: WETH,
+                        fee: swapPoolInfo[i].feeLevel,
+                        recipient: address(this),
+                        deadline: block.timestamp,
+                        amountIn: amount,
+                        amountOutMinimum: 0,
+                        sqrtPriceLimitX96: 0
+                    })
+                );
+            }
         }
         IWETH(WETH).withdraw(IERC20(WETH).balanceOf(address(this)));
         payable(msg.sender).transfer(address(this).balance - remainBalance);
