@@ -1,11 +1,11 @@
 #!/usr/bin/python3
 
 import pytest, math
-from brownie import accounts, MultiTokenCellar, Contract
+from brownie import accounts, PlentiLEI, Contract
 
 @pytest.fixture(scope="module")
-def MultiTokenCellarContract():
-    return MultiTokenCellar.deploy("Cellar", "Cellar", {'from':accounts[0]})
+def PlentiLEIContract():
+    return PlentiLEI.deploy("Plenti-LEI", "PLENTILEI", {'from':accounts[0]})
 
 @pytest.fixture(scope="session")
 def SwapRouter():

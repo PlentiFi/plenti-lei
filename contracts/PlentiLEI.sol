@@ -22,7 +22,7 @@ interface IWETH is IERC20{
     function withdraw(uint256) external;
 }
 
-contract MultiTokenCellar is ERC20, ReentrancyGuard {
+contract PlentiLEI is ERC20, ReentrancyGuard {
     struct GeneralRebalanceInput {
         uint184 amount;
         int24 direction; // 0: Eth -> token, 1:token -> Eth
@@ -49,12 +49,36 @@ contract MultiTokenCellar is ERC20, ReentrancyGuard {
     address public constant LINK_ETH_PRICE_FEED = 0xDC530D9457755926550b59e8ECcdaE7624181557;
     address public constant SOL_USD_PRICE_FEED = 0x4ffC43a60e009B551865A93d232E33Fce9f01507;
 
+    mapping(address => bool) public rebalancers;
+    address public admin;
+
+    error NonPermission();
+
     constructor(string memory name, string memory symbol)
         ERC20(name, symbol)
     {
+        admin = msg.sender;
+        rebalancers[msg.sender] = true;
+    }
+
+    function transferOwnership(address newAdmin) external {
+        if (msg.sender != admin) {
+            revert NonPermission();
+        }
+        admin = newAdmin;
+    }
+
+    function setRebalancer(address rebalancer, bool value) external {
+        if (msg.sender != admin) {
+            revert NonPermission();
+        }
+        rebalancers[rebalancer] = value;
     }
 
     function rebalance(GeneralRebalanceInput[] calldata rebalanceInput, uint256) external {
+        if (rebalancers[msg.sender] == false) {
+            revert NonPermission();
+        }
         address[TOKENCOUNT] memory assets = [WBTC, UNI, LINK, SOL];
         for (uint256 i = 0; i < TOKENCOUNT; i++) {
             if (rebalanceInput[i].amount > 0 && rebalanceInput[i].direction == 1) {
