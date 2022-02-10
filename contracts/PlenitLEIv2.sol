@@ -22,7 +22,7 @@ interface IWETH is IERC20{
     function withdraw(uint256) external;
 }
 
-contract PlentiLEI is ERC20, ReentrancyGuard {
+contract PlentiLEIv2 is ERC20, ReentrancyGuard {
     struct GeneralRebalanceInput {
         uint184 amount;
         int24 direction; // 0: Eth -> token, 1:token -> Eth
@@ -51,8 +51,11 @@ contract PlentiLEI is ERC20, ReentrancyGuard {
 
     mapping(address => bool) public adjusters;
     address public admin;
+    uint24[TOKENCOUNT] public feeLevels = [500, 3000, 3000, 3000];
 
     error NonPermission();
+    error ZeroEthAdded();
+    error HighSlippage();
 
     constructor(string memory name, string memory symbol)
         ERC20(name, symbol)
@@ -75,18 +78,28 @@ contract PlentiLEI is ERC20, ReentrancyGuard {
         adjusters[adjuster] = value;
     }
 
+    function setFeeLevels(uint24[TOKENCOUNT] calldata _feeLevels) external {
+        if (adjusters[msg.sender] == false) {
+            revert NonPermission();
+        }
+        feeLevels = _feeLevels;
+    }
+
     function rebalance(GeneralRebalanceInput[] calldata rebalanceInput, uint256) external {
         if (adjusters[msg.sender] == false) {
             revert NonPermission();
         }
         address[TOKENCOUNT] memory assets = [WBTC, UNI, LINK, SOL];
+
         for (uint256 i = 0; i < TOKENCOUNT; i++) {
             if (rebalanceInput[i].amount > 0 && rebalanceInput[i].direction == 1) {
                 address asset = assets[i];
                 IUniswapV3Pool pool = IUniswapV3Pool(IUniswapV3Factory(SWAPFACTORY).getPool(WETH, asset, rebalanceInput[i].feeLevel));
                 (, int24 tick, , , , , ) = pool.slot0();
                 int24 tickSpace = pool.tickSpacing();
-                require(rebalanceInput[i].currentTick + tickSpace >= tick && rebalanceInput[i].currentTick - tickSpace <= tick, "High Slippage");
+                if (rebalanceInput[i].currentTick + tickSpace < tick || rebalanceInput[i].currentTick - tickSpace > tick) {
+                    revert HighSlippage();
+                }
                 IERC20(asset).approve(SWAPROUTER, 0);
                 IERC20(asset).approve(SWAPROUTER, rebalanceInput[i].amount);
                 uint256 amountOut = ISwapRouter(SWAPROUTER).exactInputSingle(
@@ -106,14 +119,17 @@ contract PlentiLEI is ERC20, ReentrancyGuard {
         }
         uint256 ethBalance = address(this).balance;
         IWETH(WETH).deposit{value: ethBalance}();
-        IERC20(WETH).approve(SWAPROUTER, ethBalance);
+        IWETH(WETH).approve(SWAPROUTER, ethBalance);
+        uint24[TOKENCOUNT] memory _feeLevels;
         for (uint256 i = 0; i < TOKENCOUNT; i++) {
             if (rebalanceInput[i].amount > 0 && rebalanceInput[i].direction == 0) {
                 address asset = assets[i];
                 IUniswapV3Pool pool = IUniswapV3Pool(IUniswapV3Factory(SWAPFACTORY).getPool(WETH, asset, rebalanceInput[i].feeLevel));
                 (, int24 tick, , , , , ) = pool.slot0();
                 int24 tickSpace = pool.tickSpacing();
-                require(rebalanceInput[i].currentTick + tickSpace >= tick && rebalanceInput[i].currentTick - tickSpace <= tick, "High Slippage");
+                if (rebalanceInput[i].currentTick + tickSpace < tick || rebalanceInput[i].currentTick - tickSpace > tick) {
+                    revert HighSlippage();
+                }
                 ISwapRouter(SWAPROUTER).exactOutputSingle(
                     ISwapRouter.ExactOutputSingleParams({
                         tokenIn: WETH,
@@ -127,37 +143,82 @@ contract PlentiLEI is ERC20, ReentrancyGuard {
                     })
                 );
             }
+            _feeLevels[i] = rebalanceInput[i].feeLevel;
         }
+        feeLevels = _feeLevels;
         IWETH(WETH).withdraw(IWETH(WETH).balanceOf(address(this)));
     }
 
-    function addCapital() external payable {
-        require(msg.value > 0, "Can not add 0 Eth");
-        uint256 newCap = msg.value;
+    function addCapital(int24[TOKENCOUNT] calldata currentTicks) external payable {
+        if (msg.value == 0) {
+            revert ZeroEthAdded();
+        }
         uint256 _totalSupply = totalSupply();
         if (_totalSupply == 0) {
-            _mint(msg.sender, newCap);
+            _mint(msg.sender, msg.value);
         } else {
-            uint256 cap = (address(this).balance - msg.value);
-            cap += IERC20(WBTC).balanceOf(address(this)) * uint256(AggregatorInterface(BTC_ETH_PRICE_FEED).latestAnswer()) / 10 ** 18;
-            cap += IERC20(UNI).balanceOf(address(this)) * uint256(AggregatorInterface(UNI_ETH_PRICE_FEED).latestAnswer()) / 10 ** 18;
-            cap += IERC20(LINK).balanceOf(address(this)) * uint256(AggregatorInterface(LINK_ETH_PRICE_FEED).latestAnswer()) / 10 ** 18;
-            cap += IERC20(SOL).balanceOf(address(this)) * uint256(AggregatorInterface(SOL_USD_PRICE_FEED).latestAnswer()) / uint256(AggregatorInterface(ETH_USD_PRICE_FEED).latestAnswer());
-            _mint(msg.sender, _totalSupply * newCap / cap);
+            uint256[TOKENCOUNT + 1] memory caps;
+            caps[0] = (address(this).balance - msg.value);
+            caps[1] = IERC20(WBTC).balanceOf(address(this)) * uint256(AggregatorInterface(BTC_ETH_PRICE_FEED).latestAnswer()) / 10 ** 18;
+            caps[2] = IERC20(UNI).balanceOf(address(this)) * uint256(AggregatorInterface(UNI_ETH_PRICE_FEED).latestAnswer()) / 10 ** 18;
+            caps[3] = IERC20(LINK).balanceOf(address(this)) * uint256(AggregatorInterface(LINK_ETH_PRICE_FEED).latestAnswer()) / 10 ** 18;
+            caps[4] = IERC20(SOL).balanceOf(address(this)) * uint256(AggregatorInterface(SOL_USD_PRICE_FEED).latestAnswer()) / uint256(AggregatorInterface(ETH_USD_PRICE_FEED).latestAnswer());
+            uint256 totalCap = caps[0] + caps[1] + caps[2] + caps[3] + caps[4];
+            caps[1] = caps[1] * msg.value / totalCap;
+            caps[2] = caps[2] * msg.value / totalCap;
+            caps[3] = caps[3] * msg.value / totalCap;
+            caps[4] = caps[4] * msg.value / totalCap;
+            uint256 swapCap = caps[1] + caps[2] + caps[3] + caps[4];
+            if (swapCap > 0) {
+                address[TOKENCOUNT] memory assets = [WBTC, UNI, LINK, SOL];
+                uint24[TOKENCOUNT] memory _feeLevels = feeLevels;
+                IWETH(WETH).deposit{value: swapCap}();
+                IWETH(WETH).approve(SWAPROUTER, swapCap);
+                for (uint256 i = 1; i <= TOKENCOUNT; i++) {
+                    if (caps[i] > 0) {
+                        address asset = assets[i - 1];
+                        uint24 feeLevel = _feeLevels[i - 1];
+                        IUniswapV3Pool pool = IUniswapV3Pool(IUniswapV3Factory(SWAPFACTORY).getPool(WETH, asset, feeLevel));
+                        (, int24 tick, , , , , ) = pool.slot0();
+                        int24 tickSpace = pool.tickSpacing();
+                        if (currentTicks[i - 1] + tickSpace < tick || currentTicks[i - 1] - tickSpace > tick) {
+                            revert HighSlippage();
+                        }
+                        ISwapRouter(SWAPROUTER).exactInputSingle(
+                            ISwapRouter.ExactInputSingleParams({
+                                tokenIn: WETH,
+                                tokenOut: asset,
+                                fee: feeLevel,
+                                recipient: address(this),
+                                deadline: block.timestamp,
+                                amountIn: caps[i],
+                                amountOutMinimum: 0,
+                                sqrtPriceLimitX96: 0
+                            })
+                        );
+                    }
+                }
+            }
+            _mint(msg.sender, _totalSupply * msg.value / totalCap);
         }
     }
 
-    function removeCapital(uint256 share, SwapPoolInfo[TOKENCOUNT] calldata swapPoolInfo) external nonReentrant {
+    function removeCapital(uint256 share, int24[TOKENCOUNT] calldata currentTicks) external nonReentrant {
         address[TOKENCOUNT] memory assets = [WBTC, UNI, LINK, SOL];
         uint256 _totalSupply = totalSupply();
-        IWETH(WETH).withdraw(IERC20(WETH).balanceOf(address(this)));
+        IWETH(WETH).withdraw(IWETH(WETH).balanceOf(address(this)));
         uint256 remainBalance = address(this).balance * (_totalSupply - share) / _totalSupply;
+        uint24[TOKENCOUNT] memory _feeLevels = feeLevels;
         for (uint256 i = 0; i < TOKENCOUNT; i++) {
+            uint24 feeLevel = _feeLevels[i];
+            int24 currentTick = currentTicks[i];
             address asset = assets[i];
-            IUniswapV3Pool pool = IUniswapV3Pool(IUniswapV3Factory(SWAPFACTORY).getPool(WETH, asset, swapPoolInfo[i].feeLevel));
+            IUniswapV3Pool pool = IUniswapV3Pool(IUniswapV3Factory(SWAPFACTORY).getPool(WETH, asset, feeLevel));
             (, int24 tick, , , , , ) = pool.slot0();
             int24 tickSpace = pool.tickSpacing();
-            require(swapPoolInfo[i].currentTick + tickSpace >= tick && swapPoolInfo[i].currentTick - tickSpace <= tick, "High Slippage");
+            if (currentTick + tickSpace < tick || currentTick - tickSpace > tick) {
+                revert HighSlippage();
+            }
             uint256 amount = IERC20(asset).balanceOf(address(this)) * share / _totalSupply;
             if (amount > 0) {
                 IERC20(asset).approve(SWAPROUTER, 0);
@@ -166,7 +227,7 @@ contract PlentiLEI is ERC20, ReentrancyGuard {
                     ISwapRouter.ExactInputSingleParams({
                         tokenIn: asset,
                         tokenOut: WETH,
-                        fee: swapPoolInfo[i].feeLevel,
+                        fee: feeLevel,
                         recipient: address(this),
                         deadline: block.timestamp,
                         amountIn: amount,
@@ -176,9 +237,10 @@ contract PlentiLEI is ERC20, ReentrancyGuard {
                 );
             }
         }
-        IWETH(WETH).withdraw(IERC20(WETH).balanceOf(address(this)));
-        payable(msg.sender).transfer(address(this).balance - remainBalance);
+        IWETH(WETH).withdraw(IWETH(WETH).balanceOf(address(this)));
         _burn(msg.sender, share);
+        (bool success, ) = msg.sender.call{value:address(this).balance - remainBalance}("");
+        require(success);
     }
 
     receive() external payable {

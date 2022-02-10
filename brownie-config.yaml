@@ -1,7 +1,7 @@
 networks:
     default: development
     development:
-        max_fee: 500 gwei
+        max_fee: 150 gwei
         priority_fee: 1 gwei
 
 compiler:

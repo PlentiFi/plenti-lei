@@ -1,11 +1,15 @@
 #!/usr/bin/python3
 
 import pytest, math
-from brownie import accounts, PlentiLEI, Contract
+from brownie import accounts, PlentiLEI, PlentiLEIv2, Contract
 
 @pytest.fixture(scope="module")
 def PlentiLEIContract():
     return PlentiLEI.deploy("Plenti-LEI", "PLENTILEI", {'from':accounts[0]})
+
+@pytest.fixture(scope="module")
+def PlentiLEIv2Contract():
+    return PlentiLEIv2.deploy("Plenti-LEI v2", "PLENTILEIv2", {'from':accounts[0]})
 
 @pytest.fixture(scope="session")
 def SwapRouter():
