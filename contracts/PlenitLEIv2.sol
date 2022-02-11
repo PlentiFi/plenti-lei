@@ -22,7 +22,24 @@ interface IWETH is IERC20{
     function withdraw(uint256) external;
 }
 
-contract PlentiLEIv2 is ERC20, ReentrancyGuard {
+contract BlockLock {
+    error Locked();
+    uint256 private constant BLOCK_LOCK_COUNT = 1;
+    mapping(address => uint256) public lastLockedBlock;
+    modifier notLocked(address lockedAddress) {
+        if (lastLockedBlock[lockedAddress] > block.number) {
+            revert Locked();
+        }
+        lastLockedBlock[lockedAddress] = block.number + BLOCK_LOCK_COUNT;
+        _;
+    }
+    modifier lock(address lockedAddress) {
+        lastLockedBlock[lockedAddress] = block.number + BLOCK_LOCK_COUNT;
+        _;
+    }
+}
+
+contract PlentiLEIv2 is ERC20, ReentrancyGuard, BlockLock {
     struct GeneralRebalanceInput {
         uint184 amount;
         int24 direction; // 0: Eth -> token, 1:token -> Eth
@@ -85,7 +102,7 @@ contract PlentiLEIv2 is ERC20, ReentrancyGuard {
         feeLevels = _feeLevels;
     }
 
-    function rebalance(GeneralRebalanceInput[] calldata rebalanceInput, uint256) external {
+    function rebalance(GeneralRebalanceInput[] calldata rebalanceInput, uint256) external notLocked(msg.sender) {
         if (adjusters[msg.sender] == false) {
             revert NonPermission();
         }
@@ -149,7 +166,7 @@ contract PlentiLEIv2 is ERC20, ReentrancyGuard {
         IWETH(WETH).withdraw(IWETH(WETH).balanceOf(address(this)));
     }
 
-    function addCapital(int24[TOKENCOUNT] calldata currentTicks) external payable {
+    function addCapital(int24[TOKENCOUNT] calldata currentTicks) external payable notLocked(msg.sender) {
         if (msg.value == 0) {
             revert ZeroEthAdded();
         }
@@ -203,7 +220,7 @@ contract PlentiLEIv2 is ERC20, ReentrancyGuard {
         }
     }
 
-    function removeCapital(uint256 share, int24[TOKENCOUNT] calldata currentTicks) external nonReentrant {
+    function removeCapital(uint256 share, int24[TOKENCOUNT] calldata currentTicks) external nonReentrant notLocked(msg.sender) {
         address[TOKENCOUNT] memory assets = [WBTC, UNI, LINK, SOL];
         uint256 _totalSupply = totalSupply();
         IWETH(WETH).withdraw(IWETH(WETH).balanceOf(address(this)));
@@ -241,6 +258,14 @@ contract PlentiLEIv2 is ERC20, ReentrancyGuard {
         _burn(msg.sender, share);
         (bool success, ) = msg.sender.call{value:address(this).balance - remainBalance}("");
         require(success);
+    }
+
+    function transfer(address recipient, uint256 amount) public override lock(recipient) returns(bool) {
+        return super.transfer(recipient, amount);
+    }
+
+    function transferFrom(address sender, address recipient, uint256 amount) public override lock(recipient) returns(bool) {
+        return super.transferFrom(sender, recipient, amount);
     }
 
     receive() external payable {
